@@ -47,8 +47,6 @@ python pc/main.py --host x.x.x.x # 跳过自动发现，直连指定 IP
 
 要求：官方固件 20260522（Ubuntu 22.04，自带 Python 3.10）。
 
-**方式一：直接复制安装（推荐，最简单）**
-
 把本仓库 **`APPS/` 文件夹里的内容**复制到 TF 卡的 `Roms/APPS/` 下即可：
 
 ```
@@ -61,22 +59,6 @@ APPS/Imgs/                  →  Roms/APPS/Imgs/                  （菜单图�
 （`PocketTransfer.sh` 是 Linux 脚本，如果用 Windows 编辑过它，
 注意保持 LF 换行符——直接复制不改动则无需关心。）
 
-**方式二：SSH 脚本推送（开发/更新用）**
-
-电脑和掌机在同一局域网，掌机开机后：
-
-```bash
-pip install paramiko
-python tools/push-handheld.py            # SSH 推送 + MD5 校验
-python tools/push-handheld.py --dry-run  # 只看差异不写入
-```
-
-脚本只往 `/mnt/mmc/Roms/APPS/PocketTransfer/` 推这几个文件，
-**不碰系统其它任何内容**：
-
-```
-net.py  ui.py  main.py  boot.py  fb.py  sdl_display.py
-```
 
 **启动**：掌机菜单 → APPS → PocketTransfer。保持前台运行即可被电脑发现。
 
