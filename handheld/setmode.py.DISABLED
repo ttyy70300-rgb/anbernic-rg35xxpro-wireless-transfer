@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+切换 framebuffer 显示模式
+
+为什么要这个脚本：
+    dmenu.bin 运行时把 fb0 设成 1280x1024 16bpp（SDL 1.2 习惯）。
+    我们要的是 640x480 32bpp —— 物理屏就是 640x480，
+    1280x1024 是 dmenu 为 HDMI 兼容准备的虚拟模式。
+    两者 stride 都是 2560 字节（1280x2 = 640x4），是同一块显存。
+
+必须在 dmenu.bin 退出之后调用，否则驱动被占，写了也不生效。
+本脚本幂等：已经是目标模式时什么都不做。
+
+内核 fb_var_screeninfo 布局（Linux 4.9 uapi，192 字节）：
+    0 __id            4 __smem_start(8)  12 __smem_len(8)
+   20 __type         24 __type_aux      28 __visual
+   32 __xpanstep     36 __ypanstep      40 __ywstep
+   44 __xhstep       48 __accel         52 __video_caps
+   56 __reserved[2]  64 xres            68 yres
+   72 xres_virtual   76 yres_virtual    80 xoffset
+   84 yoffset        88 bits_per_pixel  92 grayscale
+   96 red           100 green          104 blue
+  108 transp        112 nonstd         116 activate
+  120 height        124 width          128 accel_flags
+"""
+import ctypes
+import os
+import struct
+import sys
+
+FB_DEV = "/dev/fb0"
+FBIOGET_VSCREENINFO = 0x4600
+FBIOPUT_VSCREENINFO = 0x4601
+
+TARGET_W, TARGET_H, TARGET_BPP = 640, 480, 32
+TARGET_RGB = (16, 8, 0)      # red, green, blue 偏移
+TARGET_TRANSP = 24
+
+O_XRES, O_YRES, O_XRES_V, O_YRES_V = 64, 68, 72, 76
+O_XOFF, O_YOFF, O_BPP = 80, 84, 88
+O_RED, O_GREEN, O_BLUE, O_TRANSP = 96, 100, 104, 108
+VAR_SIZE = 192
+
+_libc = ctypes.CDLL("libc.so.6", use_errno=True)
+
+
+def ioctl_get(fd):
+    buf = (ctypes.c_char * VAR_SIZE)()
+    rc = _libc.ioctl(ctypes.c_int(fd), ctypes.c_ulong(FBIOGET_VSCREENINFO),
+                     ctypes.byref(buf))
+    if rc != 0:
+        raise OSError(ctypes.get_errno(), "FBIOGET_VSCREENINFO")
+    return bytearray(buf)
+
+
+def ioctl_put(fd, data):
+    buf = (ctypes.c_char * VAR_SIZE).from_buffer(data)
+    rc = _libc.ioctl(ctypes.c_int(fd), ctypes.c_ulong(FBIOPUT_VSCREENINFO),
+                     ctypes.byref(buf))
+    if rc != 0:
+        raise OSError(ctypes.get_errno(), "FBIOPUT_VSCREENINFO")
+
+
+def g32(d, off):
+    return struct.unpack_from("<I", d, off)[0]
+
+
+def s32(d, off, v):
+    struct.pack_into("<I", d, off, v)
+
+
+def describe(tag, d):
+    print(f"[{tag}] {g32(d, O_XRES)}x{g32(d, O_YRES)} "
+          f"virt={g32(d, O_XRES_V)}x{g32(d, O_YRES_V)} "
+          f"bpp={g32(d, O_BPP)} "
+          f"rgb={g32(d, O_RED) & 0xFF}/{g32(d, O_GREEN) & 0xFF}/"
+          f"{g32(d, O_BLUE) & 0xFF} "
+          f"t={g32(d, O_TRANSP) & 0xFF}", flush=True)
+
+
+def main():
+    if not os.path.exists(FB_DEV):
+        print(f"[setmode] 找不到 {FB_DEV}", flush=True)
+        return 1
+
+    fd = os.open(FB_DEV, os.O_RDWR)
+    try:
+        d = ioctl_get(fd)
+        describe("当前", d)
+
+        want = (TARGET_W, TARGET_H, TARGET_BPP)
+        have = (g32(d, O_XRES), g32(d, O_YRES), g32(d, O_BPP))
+        if have == want:
+            print("[setmode] 已是目标模式，无需切换", flush=True)
+            return 0
+
+        print(f"[setmode] 切换到 {TARGET_W}x{TARGET_H}x{TARGET_BPP} ...", flush=True)
+        s32(d, O_XRES, TARGET_W)
+        s32(d, O_YRES, TARGET_H)
+        s32(d, O_XRES_V, TARGET_W)
+        s32(d, O_YRES_V, TARGET_H)
+        s32(d, O_XOFF, 0)
+        s32(d, O_YOFF, 0)
+        s32(d, O_BPP, TARGET_BPP)
+        # bitfield 的高 16 位是 length，标准写法是 (length << 8) | offset
+        s32(d, O_RED, (8 << 8) | TARGET_RGB[0])
+        s32(d, O_GREEN, (8 << 8) | TARGET_RGB[1])
+        s32(d, O_BLUE, (8 << 8) | TARGET_RGB[2])
+        s32(d, O_TRANSP, (0 << 8) | TARGET_TRANSP if TARGET_TRANSP >= 0 else 0)
+        try:
+            ioctl_put(fd, d)
+        except OSError as e:
+            print(f"[setmode] 切换失败: {e}", flush=True)
+            print("[setmode] 提示：dmenu.bin 可能仍持有 /dev/fb0", flush=True)
+            return 1
+
+        d2 = ioctl_get(fd)
+        describe("切换后", d2)
+        if (g32(d2, O_XRES), g32(d2, O_YRES), g32(d2, O_BPP)) == want:
+            print("[setmode] OK", flush=True)
+            return 0
+        print("[setmode] 写入后读回不一致，驱动可能忽略了请求", flush=True)
+        return 1
+    finally:
+        os.close(fd)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

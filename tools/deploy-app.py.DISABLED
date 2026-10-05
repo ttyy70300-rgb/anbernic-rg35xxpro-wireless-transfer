@@ -1,0 +1,171 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+通用部署器：把本地目录同步到掌机 APPS 下并运行
+
+与 fbtest 的 C 二进制部署不同，Python 应用需要：
+  - 保证 .py 用 LF 换行（CRLF 会导致 python3 语法报错）
+  - 保证 .sh 有可执行位
+  - 通过 PYSDL2_DLL_PATH 指向 /usr/lib
+
+用法:
+  python tools/deploy-app.py --host 192.168.3.25 --src handheld/pysdl2test --name pt-test --run
+  python tools/deploy-app.py --host 192.168.3.25 --name pt-test --log
+  python tools/deploy-app.py --host 192.168.3.25 --clean
+"""
+import argparse
+import os
+import posixpath
+import re
+import stat
+import sys
+import time
+
+import paramiko
+
+USER, PWD = "root", "root"
+APPS = "/mnt/mmc/Roms/APPS"
+
+
+def sftp_mkdirs(sftp, path):
+    parts = path.strip("/").split("/")
+    cur = ""
+    for p in parts:
+        cur = cur + "/" + p
+        try:
+            sftp.stat(cur)
+        except IOError:
+            sftp.mkdir(cur)
+
+
+def fix_lf(path):
+    """把 CRLF 换成 LF，返回是否改过"""
+    with open(path, "rb") as f:
+        data = f.read()
+    if b"\r\n" in data:
+        data = data.replace(b"\r\n", b"\n")
+        with open(path, "wb") as f:
+            f.write(data)
+        return True
+    return False
+
+
+def put_tree(sftp, local_root, remote_root):
+    fixed, count = [], 0
+    for dirpath, dirnames, filenames in os.walk(local_root):
+        dirnames[:] = [d for d in dirnames
+                       if d not in ("__pycache__", "logs", "build", ".git")]
+        rel = os.path.relpath(dirpath, local_root)
+        rdir = remote_root if rel == "." else posixpath.join(
+            remote_root, rel.replace(os.sep, "/"))
+        sftp_mkdirs(sftp, rdir)
+        for fn in filenames:
+            lf = os.path.join(dirpath, fn)
+            rf = posixpath.join(rdir, fn)
+            if fn.endswith((".py", ".sh")):
+                if fix_lf(lf):
+                    fixed.append(os.path.relpath(lf, local_root))
+            sftp.put(lf, rf)
+            if fn.endswith((".sh", ".py")):
+                sftp.chmod(rf, 0o755)
+            count += 1
+    return count, fixed
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--host", default="192.168.3.25")
+    ap.add_argument("--src", default="", help="本地源目录")
+    ap.add_argument("--name", default="pt-test", help="应用名（.sh 文件名）")
+    ap.add_argument("--run", action="store_true", help="部署后立即运行")
+    ap.add_argument("--log", action="store_true", help="打印掌机上的日志")
+    ap.add_argument("--clean", action="store_true", help="删除该应用的全部文件")
+    args = ap.parse_args()
+
+    cli = paramiko.SSHClient()
+    cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        cli.connect(args.host, username=USER, password=PWD, timeout=15,
+                    look_for_keys=False, allow_agent=False)
+    except Exception as e:
+        print(f"!! SSH 连接失败 {args.host}: {e}")
+        sys.exit(1)
+    print(f"== 已连接 {args.host} ==")
+
+    sh_path = posixpath.join(APPS, args.name + ".sh")
+
+    if args.clean:
+        cmds = [
+            f"rm -rf {posixpath.join(APPS, args.name)}",
+            f"rm -f {sh_path}",
+            f"rm -f {posixpath.join(APPS, 'Imgs', args.name + '.png')}",
+        ]
+        for c in cmds:
+            cli.exec_command(c)[1].channel.recv_exit_status()
+        print("已清理:", args.name)
+        cli.close()
+        return
+
+    if not args.src:
+        print("!! 需要 --src")
+        cli.close()
+        sys.exit(1)
+
+    src = os.path.abspath(args.src)
+    if not os.path.isdir(src):
+        print(f"!! 源目录不存在: {src}")
+        cli.close()
+        sys.exit(1)
+
+    remote_dir = posixpath.join(APPS, args.name)
+    sftp = cli.open_sftp()
+    sftp_mkdirs(sftp, remote_dir)
+    count, fixed = put_tree(sftp, src, remote_dir)
+    sftp.close()
+    print(f"已上传 {count} 个文件 -> {remote_dir}")
+    if fixed:
+        print(f"  已修正 CRLF->LF: {', '.join(fixed)}")
+
+    # 上传启动脚本（原样上传，脚本内用 basename $0 自解析负载目录名）
+    launcher = os.path.join(src, "launcher.sh")
+    if os.path.exists(launcher):
+        fix_lf(launcher)
+        sftp = cli.open_sftp()
+        sftp.put(launcher, sh_path)
+        sftp.chmod(sh_path, 0o755)
+        sftp.close()
+        print(f"已安装启动脚本 -> {sh_path}")
+    else:
+        print(f"!! 源目录缺 launcher.sh：{launcher}")
+        cli.close()
+        sys.exit(1)
+
+    # 清理旧日志
+    cli.exec_command(f"rm -f {remote_dir}/log.txt")[1].channel.recv_exit_status()
+
+    if args.run:
+        print("\n启动中 (setsid 脱离 SSH)...")
+        cli.exec_command(
+            f"cd {APPS} && setsid ./'{args.name}.sh' >/dev/null 2>&1 &"
+        )[1].channel.recv_exit_status()
+        time.sleep(6)
+        log_path = posixpath.join(remote_dir, "log.txt")
+        _, out, _ = cli.exec_command(f"cat {log_path} 2>&1")
+        data = out.read().decode("utf-8", "replace")
+        print("--- 掌机日志 ---")
+        print(data.strip() or "(日志为空)")
+    elif args.log:
+        log_path = posixpath.join(remote_dir, "log.txt")
+        _, out, _ = cli.exec_command(f"cat {log_path} 2>&1")
+        print(out.read().decode("utf-8", "replace"))
+
+    # 顺带列出 APPS 现状
+    _, out, _ = cli.exec_command(f"ls -la {APPS}/ | head -20")
+    print("\n--- APPS 目录 ---")
+    print(out.read().decode("utf-8", "replace").strip())
+
+    cli.close()
+
+
+if __name__ == "__main__":
+    main()

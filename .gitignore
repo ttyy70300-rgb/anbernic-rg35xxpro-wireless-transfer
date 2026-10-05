@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# PyInstaller 打包中间产物（最终 exe 保留在 pc/dist/）
+pc/build/
+*.spec.bak
+
+# 本地测试产物
+dist-test/
+probe-extra-raw.txt
+preview/
+
+# 运行期生成的日志
+*.error.log
+PocketTransfer-error.log
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
+
+# 掌机端实验产物
+handheld/build/
+handheld/boot.log
