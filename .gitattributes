@@ -1,0 +1,6 @@
+# 掌机是 Linux：.sh 换行符必须是 LF，否则拷到 TF 卡跑不起来
+*.sh text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+# Windows 批处理必须 CRLF
+*.bat text eol=crlf

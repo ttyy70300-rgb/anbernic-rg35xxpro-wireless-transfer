@@ -47,7 +47,21 @@ python pc/main.py --host x.x.x.x # 跳过自动发现，直连指定 IP
 
 要求：官方固件 20260522（Ubuntu 22.04，自带 Python 3.10）。
 
-**方式一：脚本推送（开发/更新用）**
+**方式一：直接复制安装（推荐，最简单）**
+
+把本仓库 **`APPS/` 文件夹里的内容**复制到 TF 卡的 `Roms/APPS/` 下即可：
+
+```
+APPS/PocketTransfer.sh      →  Roms/APPS/PocketTransfer.sh      （菜单启动脚本）
+APPS/PocketTransfer/        →  Roms/APPS/PocketTransfer/        （程序本体，6 个 .py）
+APPS/Imgs/                  →  Roms/APPS/Imgs/                  （菜单图标）
+```
+
+用读卡器或本软件本身都能拷。装完菜单里就会出现应用图标。
+（`PocketTransfer.sh` 是 Linux 脚本，如果用 Windows 编辑过它，
+注意保持 LF 换行符——直接复制不改动则无需关心。）
+
+**方式二：SSH 脚本推送（开发/更新用）**
 
 电脑和掌机在同一局域网，掌机开机后：
 
@@ -63,13 +77,6 @@ python tools/push-handheld.py --dry-run  # 只看差异不写入
 ```
 net.py  ui.py  main.py  boot.py  fb.py  sdl_display.py
 ```
-
-**方式二：手动拷贝（没有 SSH 环境时）**
-
-把 `handheld/` 下的 6 个 .py 文件拷到 TF 卡的
-`Roms/APPS/PocketTransfer/` 目录（没有就新建），
-图标 `handheld/Imgs/PocketTransfer.png`（128×128）拷到
-`Roms/APPS/Imgs/`。
 
 **启动**：掌机菜单 → APPS → PocketTransfer。保持前台运行即可被电脑发现。
 
@@ -177,7 +184,11 @@ PC 端 UI 结构冒烟测试等。改代码后跑一遍 `tools/` 下的测试即
 ## 目录结构
 
 ```
-├── handheld/            掌机端（在 RG35XX Pro 上运行，零第三方依赖）
+├── APPS/                ★ 掌机端安装包：整个内容直接拷到 TF 卡 Roms/APPS/ 下
+│   ├── PocketTransfer.sh        菜单启动脚本（不碰系统状态、自带日志轮转）
+│   ├── PocketTransfer/          程序本体（6 个 .py）
+│   └── Imgs/PocketTransfer.png  菜单图标
+├── handheld/            掌机端开发源码（与 APPS/PocketTransfer/ 内容一致）
 │   ├── main.py          入口：SDL2 全屏 + 事件主循环
 │   ├── net.py           网络层：UDP 发现 + TCP 服务端 + 确认框状态机
 │   ├── ui.py            自绘 UI：5 页面 + 确认框 + 首页 + 标定页
